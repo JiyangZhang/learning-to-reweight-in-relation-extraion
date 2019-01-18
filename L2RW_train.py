@@ -56,7 +56,7 @@ def parse_argv(argv):
     return [epochs, inputs, output, mode]
 
 class DocumentContainer(object):
-    def __init__(self, entity_pair, sentences, label,l_dist,r_dist,entity_pos):
+    def __init__(self, entity_pair, sentences, label, l_dist, r_dist, entity_pos):
         self.entity_pair = entity_pair
         self.sentences = sentences
         self.label = label
@@ -81,6 +81,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     print "Training:",str(now)
     # start iterations
+    import ipdb
     train_data, train_labels, train_poss, train_ldists, train_rdists, train_eposs = select_instance3(train_label, train_sents, train_pos, train_ldist, train_rdist, train_epos, img_h, num_classes, max_sentences, model, batch=2000)
     for epoch in range(test_epoch,epochs):
         if to_train == 1:
@@ -93,8 +94,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             #print str(now),"\tStarting Epoch",(epoch),"\tBatches:",len(batches)
             model.train()
             for batch_index, (batch_start, batch_end) in enumerate(batches):
-                batch_ids = index_array[0:50]
-                #batch_ids = index_array[batch_start:batch_end]
+                batch_ids = index_array[batch_start:batch_end]
                 x_slice = torch.from_numpy(_slice_arrays(train_data, batch_ids)).long().cuda()
                 l_slice = torch.from_numpy(_slice_arrays(train_ldists, batch_ids)).long().cuda()
                 r_slice = torch.from_numpy(_slice_arrays(train_rdists, batch_ids)).long().cuda()
@@ -106,12 +106,14 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 r_batch = autograd.Variable(r_slice, requires_grad=False)
                 e_batch = e_slice
                 train_labels_batch = autograd.Variable(train_labels_slice, requires_grad=False).squeeze(1)
+                # labels:[50, 1] 
                 # initialize a dummy network for the meta learning of the weights
                 meta_model = PCNN(word_length=len(Wv), feature_length=len(pf1), cnn_layers=230, kernel_size=(3,60), 
                     Wv=Wv, pf1=pf1, pf2=pf2, num_classes=num_classes)
                 if torch.cuda.is_available():
                     meta_model.cuda()
                 meta_model.load_state_dict(model.state_dict())
+
                 # Lines 4 - 5 initial forward pass to compute the initial weighted loss
                 results_batch, attention_scores = meta_model(x_batch, l_batch, r_batch, e_batch)
                 loss = F.cross_entropy(results_batch, train_labels_batch, reduce=False)
@@ -120,11 +122,12 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 meta_model.zero_grad()
                 # Line 6 perform a parameter update
                 grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
-                #print(eps.volatile)
                 meta_model.update_params(0.1, source_params=grads)
                 # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
                 #meta_model.eval()
-                dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs = select_instance3(dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist,  dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
+                dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs, dev_entity = select_dev3(dev_label, dev_entity,
+                    dev_sents, dev_pos, dev_ldist, dev_rdist,  dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
+                
                 # put the data into variable
                 x_dev = autograd.Variable(torch.from_numpy(dev_data).long().cuda(), requires_grad=False)
                 l_dev = autograd.Variable(torch.from_numpy(dev_ldists).long().cuda(), requires_grad=False)
@@ -159,25 +162,46 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 optimizer.step()
                 print("epoch {} batch {} training loss: {}" \
                 .format(epoch+1, batch_index+1, l_f.data))
+
             # test part
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             print str(now),"\tDone Epoch",(epoch),"\nLoss:",total_loss
-            torch.save({'epoch': epoch ,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}, directory+"model_"+str(epoch))
+            torch.save({'epoch': epoch ,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}, directory+"modules/model_"+str(epoch))
 
             model.eval()
-            dev_predict = get_test3(dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
+            dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs = select_instance3(dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
+            samples = dev_data.shape[0]
+            batches = _make_batches(samples, batch)
+            index_array = np.arange(samples)
+            random.shuffle(index_array)
+            #print str(now),"\tStarting Epoch",(epoch),"\tBatches:",len(batches)
+            results = []
+            results = np.zeros((samples, num_classes), dtype='float32')
+            for batch_index, (batch_start, batch_end) in enumerate(batches):
+                batch_ids = index_array[batch_start:batch_end]
+                x_slice = torch.from_numpy(_slice_arrays(dev_data, batch_ids)).long().cuda()
+                l_slice = torch.from_numpy(_slice_arrays(dev_ldists, batch_ids)).long().cuda()
+                r_slice = torch.from_numpy(_slice_arrays(dev_rdists, batch_ids)).long().cuda()
+                e_slice = torch.from_numpy(_slice_arrays(dev_eposs, batch_ids)).long().cuda()
+                dev_labels_slice = torch.from_numpy(_slice_arrays(dev_labels, batch_ids)).long().cuda()
+                # put the data into variable
+                x_batch = autograd.Variable(x_slice, requires_grad=False)
+                l_batch = autograd.Variable(l_slice, requires_grad=False)
+                r_batch = autograd.Variable(r_slice, requires_grad=False)
+                e_batch = e_slice
+                dev_labels_batch = autograd.Variable(dev_labels_slice, requires_grad=False).squeeze(1)
+                results_batch, attention_scores = model(x_batch, l_batch, r_batch, e_batch)
+                results[batch_start:batch_end,:] = F.softmax(results_batch, dim=-1).data.cpu().numpy()
+            rel_type_arr = np.argmax(results,axis=-1)  # (num_dev, )
+            predict_y_dist = np.asarray(np.copy(results))  # (num_dev, num_class)
 
-            if to_train == 1:
-                pickle.dump(dev_predict,open(directory+"predict_prob_dev_"+str(epoch),"wb"))
-            else:
-                pickle.dump(dev_predict,open(directory+"predict_prob_dev_temp_"+str(epoch),"wb"))
             print("Test")
 
-            dev_pr = pr(dev_predict[3], dev_predict[2], dev_entity)
-            accuracy(dev_predict[3], dev_predict[2])
+            dev_pr = pr(predict_y_dist, dev_labels, dev_entity)
+            accuracy(predict_y_dist, dev_labels)
             one_hot = []
-            results = dev_predict[3]
-            for labels in dev_label:
+            results = predict_y_dist
+            for labels in dev_labels:
                 arr = np.zeros(shape=(num_classes-1,),dtype='int32')
                 for label in labels:
                     if label != 0:
@@ -197,9 +221,10 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             precision = -1
             recall = -1
             print(str(now) + '\t epoch ' + str(epoch) + "\tTest\tScore:"+str(score)+"\t Precision : "+str(dev_pr[0]) + "\t Recall: "+str(dev_pr[1])+ "\t Total: "+ str(dev_pr[2]) + '\n')
-            f_log = open('./logs/training_log.txt', 'a+', 1)
+            f_log = open(directory + 'logs/training_log.txt', 'a+', 1)
             f_log.write(str(now) + '\t epoch ' + str(epoch) + "\tTest\tScore:"+str(score)+
                 "\t Precision : "+str(dev_pr[0]) + "\t Recall: "+str(dev_pr[1])+ "\t Total: "+ str(dev_pr[2]) + '\n')
+            f_log.close()
         else:
             print("Loading:","model_"+str(epoch))
             checkpoint = torch.load(directory+"model_"+str(epoch), map_location=lambda storage, loc: storage)
@@ -259,15 +284,20 @@ def accuracy(predict_y, true_y):
             count += 1
             if np.argmax(predict_y[i]) in true_y[i]:
                 correct += 1
-    #print "accuracy: ",float(correct)/count, correct, count
+    print "accuracy: ",float(correct)/count, correct, count
 
 
 def pr(predict_y, true_y,entity_pair):
+    """
+    predict_y: (#instance, num_class)
+    true_y: (#instance, 1)
+    """
     final_labels = []
     for label in true_y:
         if 0 in label and len(label) > 1:
             label = [x for x in label if x!=0]
         final_labels.append(label[:])
+    #assert final_labels.all() == true_y.all()
 
     total = 0
     for label in final_labels:
@@ -275,7 +305,8 @@ def pr(predict_y, true_y,entity_pair):
             continue
         else:
             total += len(label)
-    #print "Total:",total
+    print "Total:",total
+    
     results = []
     for i in range(predict_y.shape[0]):
         for j in range(1, predict_y.shape[1]):
@@ -306,7 +337,6 @@ def pr(predict_y, true_y,entity_pair):
         # if g%100 == 0:
             # print "Precision:",(p_p)/(p_p+n_p)
             # print "Recall",(p_p)/total
-
         try:
             pr.append([(p_p)/(p_p+n_p+p_n), (p_p)/total])
         except:
@@ -323,7 +353,7 @@ def pr(predict_y, true_y,entity_pair):
 
         if (p_p)/total > 0.7:
             break
-    #print "p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final
+    print "p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final
     return [prec,rec,total,pr]
 
 def _make_batches(size, batch_size):
@@ -346,7 +376,6 @@ def _slice_arrays(arrays, start=None, stop=None):
             return arrays[start]
         else:
             return arrays[start:stop]
-
 
 def get_test3(label, sents, pos, ldist, rdist, epos, img_h , numClasses, maxSentences, testModel, filterSize = 3, batch = 1000):
     numBags = len(label)
@@ -480,7 +509,50 @@ def select_instance3(label, sents, pos, ldist, rdist, epos, img_h, numClasses, m
     
     return [x, lab, p, l, r, e]
 
+def select_dev3(label, entity, sents, pos, ldist, rdist, epos, img_h, numClasses, maxSentences, testModel, filterSize = 3,batch=1000):
+    """
+    preprocess the data: take every sentence as an example
+    """
+    numBags = len(label)
+    bagIndexX = 0
+    totalSents = 0
+    for bagIndex, insNum in enumerate(sents):
+        totalSents += len(insNum)
 
+    x = np.zeros((totalSents, img_h), dtype='int32')
+    p = np.zeros((totalSents, img_h), dtype='int32')
+    l = np.zeros((totalSents, img_h), dtype='int32')
+    r = np.zeros((totalSents, img_h), dtype='int32')
+    e = np.zeros((totalSents, 2), dtype='int32')
+    lab = np.zeros((totalSents, 1), dtype='int32')
+    dev_entity = []
+    curr = 0
+    for bagIndex, insNum in enumerate(sents):
+        if len(insNum) > 0:
+            for m in range(len(insNum)):
+                x[curr,:] = sents[bagIndex][m]
+                l[curr,:] = ldist[bagIndex][m]
+                r[curr,:] = rdist[bagIndex][m]
+                lab[curr, :] = [label[bagIndex][0]]
+                dev_entity.append(entity[bagIndex])
+                epos[bagIndex][m] = sorted(epos[bagIndex][m])
+                if epos[bagIndex][m][0] > 79:
+                    epos[bagIndex][m][0] = 79
+                if epos[bagIndex][m][1] > 79:
+                    epos[bagIndex][m][1] = 79
+                if epos[bagIndex][m][0] == epos[bagIndex][m][1]:
+                    e[curr,:] = [epos[bagIndex][m][0]+int(filterSize/2), epos[bagIndex][m][1]+ int(filterSize/2) + 1]
+                else:
+                    e[curr,:] = [epos[bagIndex][m][0]+int(filterSize/2), epos[bagIndex][m][1]+ int(filterSize/2)]
+                curr += 1
+    sample_index = np.random.randint(0, totalSents, 50)
+    x = np.array(x.tolist())[sample_index]
+    l = np.array(l.tolist())[sample_index]
+    r = np.array(r.tolist())[sample_index]
+    e = np.array(e.tolist())[sample_index]
+    lab = np.array(lab.tolist())[sample_index]
+    
+    return [x, lab, p, l, r, e, dev_entity]
 
 
 if __name__ == "__main__":
@@ -525,7 +597,7 @@ if __name__ == "__main__":
                     resultdir,
                     Wv,
                     PF1,
-                    PF2,batch=50, test_epoch=0, to_train=1, num_classes=53)
+                    PF2,batch=50, test_epoch=0, to_train=1, num_classes=5)
 
         
 
