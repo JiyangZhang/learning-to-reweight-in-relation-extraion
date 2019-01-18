@@ -17,6 +17,9 @@ import operator
 import random
 from sklearn.metrics import average_precision_score
 import getopt
+from logger import Logger
+
+log = Logger('./logs')
 
 
 hyperparameters = {
@@ -72,16 +75,23 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
         Wv=Wv, pf1=pf1, pf2=pf2, num_classes=num_classes)
     if torch.cuda.is_available():
             model.cuda()
-    # prepare the train, dev, test data
     [test_label, test_sents, test_pos, test_ldist, test_rdist, test_entity, test_epos] = bags_decompose(test)
     [dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_entity, dev_epos] = bags_decompose(dev)
     [train_label, train_sents, train_pos, train_ldist, train_rdist, train_entity, train_epos] = bags_decompose(train)
     optimizer = optim.SGD(model.parameters(), lr=0.1)
+
+    if test_epoch != 0 and to_train==1:
+        print "Loading:","model_"+str(test_epoch)
+        checkpoint = torch.load(directory+"modules/model_"+str(test_epoch), map_location=lambda storage, loc: storage)
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+
+    # prepare the train, dev, test data
+    
     # start the training
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     print "Training:",str(now)
     # start iterations
-    import ipdb
     train_data, train_labels, train_poss, train_ldists, train_rdists, train_eposs = select_instance3(train_label, train_sents, train_pos, train_ldist, train_rdist, train_epos, img_h, num_classes, max_sentences, model, batch=2000)
     for epoch in range(test_epoch,epochs):
         if to_train == 1:
@@ -91,8 +101,8 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             batches = _make_batches(samples, batch)
             index_array = np.arange(samples)
             random.shuffle(index_array)
-            #print str(now),"\tStarting Epoch",(epoch),"\tBatches:",len(batches)
-            model.train()
+            print str(now),"\tStarting Epoch",(epoch),"\tBatches:",len(batches)
+            #model.train()
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 batch_ids = index_array[batch_start:batch_end]
                 x_slice = torch.from_numpy(_slice_arrays(train_data, batch_ids)).long().cuda()
@@ -105,14 +115,13 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 l_batch = autograd.Variable(l_slice, requires_grad=False)
                 r_batch = autograd.Variable(r_slice, requires_grad=False)
                 e_batch = e_slice
-                train_labels_batch = autograd.Variable(train_labels_slice, requires_grad=False).squeeze(1)
-                # labels:[50, 1] 
+                train_labels_batch = autograd.Variable(train_labels_slice, requires_grad=False).squeeze(1) 
                 # initialize a dummy network for the meta learning of the weights
                 meta_model = PCNN(word_length=len(Wv), feature_length=len(pf1), cnn_layers=230, kernel_size=(3,60), 
                     Wv=Wv, pf1=pf1, pf2=pf2, num_classes=num_classes)
                 if torch.cuda.is_available():
                     meta_model.cuda()
-                meta_model.load_state_dict(model.state_dict())
+                #meta_model.load_state_dict(model.state_dict())
 
                 # Lines 4 - 5 initial forward pass to compute the initial weighted loss
                 results_batch, attention_scores = meta_model(x_batch, l_batch, r_batch, e_batch)
@@ -126,7 +135,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
                 #meta_model.eval()
                 dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs, dev_entity = select_dev3(dev_label, dev_entity,
-                    dev_sents, dev_pos, dev_ldist, dev_rdist,  dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
+                    dev_sents, dev_pos, dev_ldist, dev_rdist,  dev_epos, img_h, num_classes, max_sentences, model, batch=batch)
                 
                 # put the data into variable
                 x_dev = autograd.Variable(torch.from_numpy(dev_data).long().cuda(), requires_grad=False)
@@ -153,6 +162,9 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 model.train()
                 results_batch, attention_scores = model(x_batch, l_batch, r_batch, e_batch)
                 loss = F.cross_entropy(results_batch, train_labels_batch, reduce=False)
+                # Debug
+                #losss = F.cross_entropy(results_batch, train_labels_batch)
+                #print(model.parameters())
                 l_f = torch.sum(loss * w)
                 
                 total_loss += l_f.data
@@ -167,6 +179,21 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             print str(now),"\tDone Epoch",(epoch),"\nLoss:",total_loss
             torch.save({'epoch': epoch ,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}, directory+"modules/model_"+str(epoch))
+            # ================================================================== #
+                #                        Tensorboard Logging                         #
+                # ================================================================== #
+
+            # 1. Log scalar values (scalar summary)
+            info = { 'loss': total_loss.item()/samples, 'accuracy': 1.0}
+            
+            for tag, value in info.items():
+                log.scalar_summary(tag, value, epoch+1)
+            
+            # 2. Log values and gradients of the parameters (histogram summary)
+            for tag, value in model.named_parameters():
+                tag = tag.replace('.', '/')
+                log.histo_summary(tag, value.data.cpu().numpy(), epoch+1)
+                log.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch+1)
 
             model.eval()
             dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs = select_instance3(dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
@@ -293,25 +320,28 @@ def pr(predict_y, true_y,entity_pair):
     true_y: (#instance, 1)
     """
     final_labels = []
+    
     for label in true_y:
         if 0 in label and len(label) > 1:
             label = [x for x in label if x!=0]
         final_labels.append(label[:])
-    #assert final_labels.all() == true_y.all()
-
+    # final_labels: list type (#instance, 1)
+    
     total = 0
     for label in final_labels:
         if 0 in label:
             continue
         else:
             total += len(label)
-    print "Total:",total
+    print "Total:",total  # exclude the label 0
     
     results = []
+    
     for i in range(predict_y.shape[0]):
         for j in range(1, predict_y.shape[1]):
             results.append([i,j,predict_y[i][j],entity_pair[i]])
-    resultSorted = sorted(results, key=operator.itemgetter(2),reverse=True)
+    resultSorted = sorted(results, key=operator.itemgetter(2),reverse=True)  # (#inst, 4) sorted in prob dece
+    
     p_p = 0.0
     p_n = 0.0
     n_p = 0.0
@@ -326,14 +356,14 @@ def pr(predict_y, true_y,entity_pair):
         prev = item[2]
         if 0 in final_labels[item[0]]:
             if item[1] == 0:
-                temp = 1
+                temp = 1  # right predict but label is N/A
             else:
-                n_p += 1
+                n_p += 1  # wrong predict
         else:
             if item[1] in final_labels[item[0]]:
-                p_p += 1
+                p_p += 1  # right predict
             else:
-                p_n += 1
+                p_n += 1  # wrong predict
         # if g%100 == 0:
             # print "Precision:",(p_p)/(p_p+n_p)
             # print "Recall",(p_p)/total
@@ -343,17 +373,17 @@ def pr(predict_y, true_y,entity_pair):
             pr.append([1.0,(p_p)/total])
         if rec <= 0.3:
             try:
-                prec = (p_p)/(p_p+n_p+p_n)
-            except:
+                prec = (p_p)/(p_p+n_p+p_n)  # precision = (relevant)/total
+            except: 
                 prec = 1.0
-            rec = (p_p)/total
+            rec = (p_p)/total  # recall = (relevant)/total
             p_p_final = p_p
             p_n_final = p_n
             n_p_final = n_p
 
         if (p_p)/total > 0.7:
             break
-    print "p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final
+    print "p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final, "g:", g
     return [prec,rec,total,pr]
 
 def _make_batches(size, batch_size):
@@ -545,7 +575,7 @@ def select_dev3(label, entity, sents, pos, ldist, rdist, epos, img_h, numClasses
                 else:
                     e[curr,:] = [epos[bagIndex][m][0]+int(filterSize/2), epos[bagIndex][m][1]+ int(filterSize/2)]
                 curr += 1
-    sample_index = np.random.randint(0, totalSents, 50)
+    sample_index = np.random.randint(0, totalSents, batch)
     x = np.array(x.tolist())[sample_index]
     l = np.array(l.tolist())[sample_index]
     r = np.array(r.tolist())[sample_index]
@@ -593,11 +623,11 @@ if __name__ == "__main__":
     train_lre(train,
                     test,
                     dev,
-                    50,
+                    100,
                     resultdir,
                     Wv,
                     PF1,
-                    PF2,batch=50, test_epoch=0, to_train=1, num_classes=5)
+                    PF2,batch=20, test_epoch=0, to_train=1, num_classes=5)
 
         
 
