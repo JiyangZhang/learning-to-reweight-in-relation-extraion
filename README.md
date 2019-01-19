@@ -9,7 +9,7 @@ Python 2.7 PyTorch 0.4.0. tensorflow 1.12.0
 
 ## Dataset
 
-I use the GIDS dataset, thanks to SharmisthaJat: https://github.com/SharmisthaJat/RE-DS-Word-Attention-Models
+I use the GIDS dataset and modified the PCCN model, thanks to SharmisthaJat: https://github.com/SharmisthaJat/RE-DS-Word-Attention-Models
 
 ## Running command
 
