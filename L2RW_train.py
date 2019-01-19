@@ -19,7 +19,7 @@ from sklearn.metrics import average_precision_score
 import getopt
 from logger import Logger
 
-log = Logger('./logs')
+log = Logger('./lerw/tblog')
 
 
 hyperparameters = {
@@ -78,7 +78,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
     [test_label, test_sents, test_pos, test_ldist, test_rdist, test_entity, test_epos] = bags_decompose(test)
     [dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_entity, dev_epos] = bags_decompose(dev)
     [train_label, train_sents, train_pos, train_ldist, train_rdist, train_entity, train_epos] = bags_decompose(train)
-    optimizer = optim.SGD(model.parameters(), lr=0.1)
+    optimizer = optim.SGD(model.params(), lr=0.1)
 
     if test_epoch != 0 and to_train==1:
         print "Loading:","model_"+str(test_epoch)
@@ -102,7 +102,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             index_array = np.arange(samples)
             random.shuffle(index_array)
             print str(now),"\tStarting Epoch",(epoch),"\tBatches:",len(batches)
-            #model.train()
+            model.train()
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 batch_ids = index_array[batch_start:batch_end]
                 x_slice = torch.from_numpy(_slice_arrays(train_data, batch_ids)).long().cuda()
@@ -121,8 +121,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                     Wv=Wv, pf1=pf1, pf2=pf2, num_classes=num_classes)
                 if torch.cuda.is_available():
                     meta_model.cuda()
-                #meta_model.load_state_dict(model.state_dict())
-
+                meta_model.load_state_dict(model.state_dict())
                 # Lines 4 - 5 initial forward pass to compute the initial weighted loss
                 results_batch, attention_scores = meta_model(x_batch, l_batch, r_batch, e_batch)
                 loss = F.cross_entropy(results_batch, train_labels_batch, reduce=False)
@@ -133,7 +132,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
                 meta_model.update_params(0.1, source_params=grads)
                 # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
-                #meta_model.eval()
+                meta_model.eval()
                 dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs, dev_entity = select_dev3(dev_label, dev_entity,
                     dev_sents, dev_pos, dev_ldist, dev_rdist,  dev_epos, img_h, num_classes, max_sentences, model, batch=batch)
                 
@@ -148,7 +147,6 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 l_g_meta = F.cross_entropy(results_dev, dev_labels) 
                 # calculate the gradients of eps
                 grad_eps = torch.autograd.grad(l_g_meta, eps, only_inputs=True, allow_unused=True)[0]
-                
                 # Line 11 computing and normalizing the weights
                 w_tilde = torch.clamp(-grad_eps,min=0)
                 norm_c = torch.sum(w_tilde)
@@ -162,9 +160,6 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 model.train()
                 results_batch, attention_scores = model(x_batch, l_batch, r_batch, e_batch)
                 loss = F.cross_entropy(results_batch, train_labels_batch, reduce=False)
-                # Debug
-                #losss = F.cross_entropy(results_batch, train_labels_batch)
-                #print(model.parameters())
                 l_f = torch.sum(loss * w)
                 
                 total_loss += l_f.data
@@ -179,10 +174,10 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             print str(now),"\tDone Epoch",(epoch),"\nLoss:",total_loss
             torch.save({'epoch': epoch ,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}, directory+"modules/model_"+str(epoch))
-            # ================================================================== #
+                # ================================================================== #
                 #                        Tensorboard Logging                         #
                 # ================================================================== #
-
+            
             # 1. Log scalar values (scalar summary)
             info = { 'loss': total_loss.item()/samples, 'accuracy': 1.0}
             
@@ -194,8 +189,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
                 tag = tag.replace('.', '/')
                 log.histo_summary(tag, value.data.cpu().numpy(), epoch+1)
                 log.histo_summary(tag+'/grad', value.grad.data.cpu().numpy(), epoch+1)
-
-            model.eval()
+            
             dev_data, dev_labels, dev_poss, dev_ldists, dev_rdists, dev_eposs = select_instance3(dev_label, dev_sents, dev_pos, dev_ldist, dev_rdist, dev_epos, img_h, num_classes, max_sentences, model, batch=2000)
             samples = dev_data.shape[0]
             batches = _make_batches(samples, batch)
@@ -223,9 +217,9 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             predict_y_dist = np.asarray(np.copy(results))  # (num_dev, num_class)
 
             print("Test")
+            dev_pr = pr(rel_type_arr, dev_labels, dev_entity)
+            #accuracy(predict_y_dist, dev_labels)
 
-            dev_pr = pr(predict_y_dist, dev_labels, dev_entity)
-            accuracy(predict_y_dist, dev_labels)
             one_hot = []
             results = predict_y_dist
             for labels in dev_labels:
@@ -237,8 +231,9 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             one_hot = np.array(one_hot)
             results = results[:,1:]
             score = average_precision_score(one_hot, results, average='micro')
+
             if to_train == 1:
-                out = open(directory+"pr_dev_"+str(epoch),"wb")
+                out = open(directory+"prdev/pr_dev_"+str(epoch),"wb")
             else:
                 out = open(directory+"pr_dev_temp_"+str(epoch),"wb")
             for res in dev_pr[3]:
@@ -248,7 +243,7 @@ def train_lre(train, test, dev, epochs, directory, Wv, pf1,
             precision = -1
             recall = -1
             print(str(now) + '\t epoch ' + str(epoch) + "\tTest\tScore:"+str(score)+"\t Precision : "+str(dev_pr[0]) + "\t Recall: "+str(dev_pr[1])+ "\t Total: "+ str(dev_pr[2]) + '\n')
-            f_log = open(directory + 'logs/training_log.txt', 'a+', 1)
+            f_log = open(directory + 'logs/valid_log.txt', 'a+', 1)
             f_log.write(str(now) + '\t epoch ' + str(epoch) + "\tTest\tScore:"+str(score)+
                 "\t Precision : "+str(dev_pr[0]) + "\t Recall: "+str(dev_pr[1])+ "\t Total: "+ str(dev_pr[2]) + '\n')
             f_log.close()
@@ -314,37 +309,22 @@ def accuracy(predict_y, true_y):
     print "accuracy: ",float(correct)/count, correct, count
 
 
-def pr(predict_y, true_y,entity_pair):
+def pr(predict_y, true_y, entity_pair):
     """
-    predict_y: (#instance, num_class)
+    predict_y: (#instance, )
     true_y: (#instance, 1)
     """
-    final_labels = []
-    
-    for label in true_y:
-        if 0 in label and len(label) > 1:
-            label = [x for x in label if x!=0]
-        final_labels.append(label[:])
-    # final_labels: list type (#instance, 1)
-    
-    total = 0
-    for label in final_labels:
-        if 0 in label:
+    total = np.shape(true_y)[0]
+    for label in predict_y:
+        if 0 == label:
             continue
         else:
-            total += len(label)
+            total += 1
     print "Total:",total  # exclude the label 0
     
-    results = []
-    
-    for i in range(predict_y.shape[0]):
-        for j in range(1, predict_y.shape[1]):
-            results.append([i,j,predict_y[i][j],entity_pair[i]])
-    resultSorted = sorted(results, key=operator.itemgetter(2),reverse=True)  # (#inst, 4) sorted in prob dece
-    
-    p_p = 0.0
-    p_n = 0.0
-    n_p = 0.0
+    p_p = 0.0  # true postive
+    p_n = 0.0  # false postive
+    n_p = 0.0  # false negative
     pr = []
     prec = 0.0
     rec = 0.0
@@ -352,23 +332,19 @@ def pr(predict_y, true_y,entity_pair):
     p_n_final = 0.0
     n_p_final = 0.0
     prev = -1
-    for g,item in enumerate(resultSorted):
-        prev = item[2]
-        if 0 in final_labels[item[0]]:
-            if item[1] == 0:
-                temp = 1  # right predict but label is N/A
+    for real ,pred in zip(predict_y, true_y):
+        if real == 0:
+            if pred == 0:
+                temp = 1  # true negative
             else:
-                n_p += 1  # wrong predict
+                n_p += 1  # false negative
         else:
-            if item[1] in final_labels[item[0]]:
-                p_p += 1  # right predict
+            if pred == real:
+                p_p += 1  # true postive
             else:
-                p_n += 1  # wrong predict
-        # if g%100 == 0:
-            # print "Precision:",(p_p)/(p_p+n_p)
-            # print "Recall",(p_p)/total
+                p_n += 1  # false postive
         try:
-            pr.append([(p_p)/(p_p+n_p+p_n), (p_p)/total])
+            pr.append([(p_p)/(p_p+n_p+p_n), (p_p)/total])  # pr = [precision, recall]
         except:
             pr.append([1.0,(p_p)/total])
         if rec <= 0.3:
@@ -383,7 +359,7 @@ def pr(predict_y, true_y,entity_pair):
 
         if (p_p)/total > 0.7:
             break
-    print "p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final, "g:", g
+    print ("p_p:",p_p_final,"n_p:",n_p_final,"p_n:",p_n_final)
     return [prec,rec,total,pr]
 
 def _make_batches(size, batch_size):
@@ -627,7 +603,7 @@ if __name__ == "__main__":
                     resultdir,
                     Wv,
                     PF1,
-                    PF2,batch=20, test_epoch=0, to_train=1, num_classes=5)
+                    PF2,batch=50, test_epoch=0, to_train=1, num_classes=5)
 
         
 

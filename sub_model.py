@@ -34,9 +34,9 @@ class getEmbeddings(nn.Module):
 class MetaModule(nn.Module):
     # adopted from: Adrien Ecoffet https://github.com/AdrienLE
     def params(self):
-       for name, param in self.named_params(self):
+        for name, param in self.named_params(self):
             yield param
-    
+
     def named_leaves(self):
         return []
     
@@ -70,6 +70,9 @@ class MetaModule(nn.Module):
         if source_params is not None:
             for tgt, src in zip(self.named_params(self), source_params):
                 name_t, param_t = tgt
+                if "embeddings" in name_t:
+                    continue
+                #print(name_t)
                 # name_s, param_s = src
                 # grad = param_s.grad
                 # name_s, param_s = src
@@ -77,9 +80,6 @@ class MetaModule(nn.Module):
                 if first_order:
                     grad = to_var(grad.detach().data)
                 tmp = param_t - lr_inner * grad
-                if "embeddings" in name_t:
-                    continue
-                #print(name_t, type(tmp))
                 self.set_param(self, name_t, tmp)
         else:
 
@@ -96,7 +96,6 @@ class MetaModule(nn.Module):
 
     def set_param(self,curr_mod, name, param):
         if '.' in name:
-            #print('name has .')
             n = name.split('.')
             module_name = n[0]
             rest = '.'.join(n[1:])
@@ -106,7 +105,6 @@ class MetaModule(nn.Module):
                     self.set_param(mod, rest, param)
                     break
         else:
-            #print(name, type(param))
             setattr(curr_mod, name, param)
             
     def detach_params(self):
