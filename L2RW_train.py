@@ -314,9 +314,10 @@ def pr(predict_y, true_y, entity_pair):
     predict_y: (#instance, )
     true_y: (#instance, 1)
     """
-    total = np.shape(true_y)[0]
-    for label in predict_y:
-        if 0 == label:
+    total = 0
+    #total = np.shape(true_y)[0]
+    for label in true_y:
+        if label == 0:
             continue
         else:
             total += 1
@@ -332,7 +333,7 @@ def pr(predict_y, true_y, entity_pair):
     p_n_final = 0.0
     n_p_final = 0.0
     prev = -1
-    for real ,pred in zip(predict_y, true_y):
+    for real ,pred in zip(true_y, predict_y):
         if real == 0:
             if pred == 0:
                 temp = 1  # true negative
@@ -349,7 +350,7 @@ def pr(predict_y, true_y, entity_pair):
             pr.append([1.0,(p_p)/total])
         if rec <= 0.3:
             try:
-                prec = (p_p)/(p_p+n_p+p_n)  # precision = (relevant)/total
+                prec = (p_p)/(p_p+n_p+p_n)  # precision
             except: 
                 prec = 1.0
             rec = (p_p)/total  # recall = (relevant)/total
