@@ -3,6 +3,16 @@ This is a project that applies the learning strategy in the paper https://arxiv.
 
 We want to use it in the relation extraction area, hoping to deal with the noisy dataset problem.
 
+## Future plan
+
+experiments:
+
+1. noisy training data + PCNN
+
+2. clean training data + PCNN
+
+3. noisy training data + l2rw
+
 ## Software required
 
 Python 2.7 PyTorch 0.4.0. tensorflow 1.12.0
